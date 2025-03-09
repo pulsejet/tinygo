@@ -184,10 +184,6 @@ func scheduler(returnAtDeadlock bool) {
 				if returnAtDeadlock {
 					return
 				}
-				if asyncScheduler {
-					// JavaScript is treated specially, see below.
-					return
-				}
 				waitForEvents()
 				continue
 			}
@@ -214,13 +210,6 @@ func scheduler(returnAtDeadlock bool) {
 			}
 			if timeLeft > 0 {
 				sleepTicks(timeLeft)
-				if asyncScheduler {
-					// The sleepTicks function above only sets a timeout at
-					// which point the scheduler will be called again. It does
-					// not really sleep. So instead of sleeping, we return and
-					// expect to be called again.
-					break
-				}
 			}
 			continue
 		}

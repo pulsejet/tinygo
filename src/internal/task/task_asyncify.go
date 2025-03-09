@@ -14,6 +14,14 @@ const stackCanary = uintptr(uint64(0x670c1333b83bf575) & uint64(^uintptr(0)))
 //go:linkname runtimePanic runtime.runtimePanic
 func runtimePanic(str string)
 
+//go:wasmimport gojs runtime.jspiSleep
+func jspiSleep(ptr uint32)
+
+//go:wasmimport gojs runtime.jspiWake
+func jspiWake(ptr uint32)
+
+var tid uint32 = 0
+
 // state is a structure which holds a reference to the state of the task.
 // When the task is suspended, the stack pointers are saved here.
 type state struct {
@@ -28,6 +36,7 @@ type state struct {
 	stackState
 
 	launched bool
+	tid      uint32
 }
 
 // stackState is the saved state of a stack while unwound.
@@ -66,20 +75,6 @@ func (s *state) initialize(fn uintptr, args unsafe.Pointer, stackSize uintptr) {
 	// Save the entry call.
 	s.entry = fn
 	s.args = args
-
-	// Create a stack.
-	stack := runtime_alloc(stackSize, nil)
-
-	// Set up the stack canary, a random number that should be checked when
-	// switching from the task back to the scheduler. The stack canary pointer
-	// points to the first word of the stack. If it has changed between now and
-	// the next stack switch, there was a stack overflow.
-	s.canaryPtr = (*uintptr)(stack)
-	*s.canaryPtr = stackCanary
-
-	// Calculate stack base addresses.
-	s.asyncifysp = unsafe.Add(stack, unsafe.Sizeof(uintptr(0)))
-	s.csp = unsafe.Add(stack, stackSize)
 }
 
 // currentTask is the current running task, or nil if currently in the scheduler.
@@ -93,38 +88,33 @@ func Current() *Task {
 // Pause suspends the current task and returns to the scheduler.
 // This function may only be called when running on a goroutine stack, not when running on the system stack.
 func Pause() {
-	if *currentTask.state.canaryPtr != stackCanary {
-		runtimePanic("stack overflow")
+	if currentTask == nil {
+		trap()
 	}
 
-	currentTask.state.unwind()
+	jspiSleep(currentTask.state.tid)
 }
-
-//export tinygo_unwind
-func (*stackState) unwind()
 
 // Resume the task until it pauses or completes.
 // This may only be called from the scheduler.
 func (t *Task) Resume() {
 	// The current task must be saved and restored because this can nest on WASM with JS.
-	prevTask := currentTask
-	t.gcData.swap()
 	currentTask = t
-	if !t.state.launched {
-		t.state.launch()
-		t.state.launched = true
-	} else {
-		t.state.rewind()
-	}
-	currentTask = prevTask
 	t.gcData.swap()
-	if uintptr(t.state.asyncifysp) > uintptr(t.state.csp) {
-		runtimePanic("stack overflow")
+	if !t.state.launched {
+		tid++
+		t.state.tid = tid
+		t.state.launched = true
+		t.state.launch()
+	} else {
+		jspiWake(t.state.tid)
 	}
+	t.gcData.swap()
+	currentTask = nil
 }
 
-//export tinygo_rewind
-func (*state) rewind()
+//export tinygo_trap
+func trap()
 
 // OnSystemStack returns whether the caller is running on the system stack.
 func OnSystemStack() bool {

@@ -139,6 +139,8 @@
 			this._callbackTimeouts = new Map();
 			this._nextCallbackTimeoutID = 1;
 
+			globalThis.go_susp = new Map();
+
 			const mem = () => {
 				// The buffer may change when requesting more memory.
 				return new DataView(this._inst.exports.memory.buffer);
@@ -283,23 +285,35 @@
 					},
 				},
 				gojs: {
+					"runtime.jspiSleep": new WebAssembly.Suspending((id) => {
+						return new Promise((resume) => {
+						  	globalThis.go_susp.set(id, () => {
+								globalThis.go_susp.delete(id);
+								resume();
+						  	});
+
+						  	// Call the scheduler again. An exception here is likely a trap (nothing to do).
+						  	WebAssembly.promising(this._inst.exports.go_scheduler)()
+								.catch(() => { });
+						})
+					}),
+
+					"runtime.jspiWake": new WebAssembly.Suspending((id) => {
+						globalThis.go_susp.get(id)?.();
+					}),
+
 					// func ticks() float64
 					"runtime.ticks": () => {
 						return timeOrigin + performance.now();
 					},
 
 					// func sleepTicks(timeout float64)
-					"runtime.sleepTicks": (timeout) => {
-						// Do not sleep, only reactivate scheduler after the given timeout.
+					"runtime.sleepTicks": new WebAssembly.Suspending((timeout) => new Promise((resolve) => {
 						setTimeout(() => {
 							if (this.exited) return;
-							try {
-								this._inst.exports.go_scheduler();
-							} catch (e) {
-								if (e !== wasmExit) throw e;
-							}
+							resolve();
 						}, timeout);
-					},
+					})),
 
 					// func finalizeRef(v ref)
 					"syscall/js.finalizeRef": (v_ref) => {
@@ -492,7 +506,7 @@
 				// Run program, but catch the wasmExit exception that's thrown
 				// to return back here.
 				try {
-					this._inst.exports._start();
+					await WebAssembly.promising(this._inst.exports._start)();
 				} catch (e) {
 					if (e !== wasmExit) throw e;
 				}
